@@ -1,0 +1,254 @@
+\documentclass[a4paper]{article}
+\usepackage{authblk}
+\bibliographystyle{plainnat}
+\usepackage[left=1.4in, right=1.4in]{geometry}
+\setlength{\parskip}{0.5cm}
+\usepackage{listings}
+\usepackage{graphicx}
+\usepackage{soul}
+
+\title{On the Fusability of Non-Affine Loops}
+\author{F. Luporini}
+\date{}
+
+\begin{document}
+\lstset{language=C, breaklines=true}
+ 
+\maketitle
+
+\section{Characterization}
+This document is an attempt at characterizing the conditions under which a sequence of possibly non-affine loop structures (nests) can be fused into a single loop structure. We focus on a particular class of loops, which is very common in scientific computations, e.g. those based on finite element and finite volume methods. This class is broader than that targeted by the polyhedral model, since it includes forms of non-affine loops that are inherently untreatable through polyhedral analysis. Specifically, our loop chains have some peculiarities:
+\begin{itemize}
+\item (the scope of) a loop chain is delimited either by the scope of the block in which it is embedded or by the presence of global reductions or by calls to external library functions. Most of the times, in real-world applications, loop chains are ``broken`` by the presence of these sort of implicit synchronization points.
+\item each loop structure (nest) in the loop chain is characterized by:
+  \begin{enumerate}
+  \item an outer loop whose bounds are affine functions of some problem-specific parameters, whereas the body could (but also could not) have arrays accessed through non-affine index functions (e.g. indirection arrays);
+  \item any inner, non-perfect loop nest is affine;
+  \item as a corollary, only one non-affine loop can be present per loop structure, and this has to be the outermost one (or, equivalently, interchangable with the inner ones);
+  \item iterations can be executed in any order (no wave-front computations);
+  \item the non-affine index functions describe a mesh, not a generic graph;
+  \item any non-affine index function is static, i.e. it never changes in the scope of the loop chain (e.g. the mesh does not change across the time-stepping loop).
+  \end{enumerate}
+\item any write/increment\footnote{We recall the distinction between write and increment is that increments are associative operations, and therefore amenable to parallelization in the case of an indirect loop, whereas writes are not} occurs on a dataset associated with the outer loop.
+\end{itemize}
+An example of such a loop chain is provided in the following listing.
+
+\clearpage
+
+\begin{footnotesize}
+\begin{lstlisting}
+for t in timesteps:
+{
+  // loop structure 0, read indirectly, increment indirectly
+  for i=0, i<E, i++
+    a0 = A[map_a0[i+0]]
+    a1 = A[map_a0[i+1]]
+    a2 = A[map_a0[i+2]]
+    ...
+    for j=0, j<18, j++
+      tmp[j] = h(a0, a1, ...)
+    C[map_c0[i]+0] += tmp[0]
+    C[map_c0[i]+1] += tmp[1]
+    ...
+
+  // loop structure 1, read indirectly, increment indirectly
+  for i=0, i<C, i++
+    a0 = A[map_a1[i+0]]
+    a1 = A[map_a1[i+1]]
+    a2 = A[map_a1[i+2]]
+    for j=0, j<9, j++
+      tmp[j] = f0(a0, a1, a2, ...)
+    C[map_c1[i]+0] += tmp[0]
+    C[map_c1[i]+1] += tmp[1]
+    C[map_c1[i]+2] += tmp[2]
+    ... = ...
+
+  // loop structure 2, read indirectly, increment indirectly
+  for i=0, i<C, i++
+    a0 = A[map_a1[i+0]]
+    a1 = A[map_a1[i+1]]
+    a2 = A[map_a1[i+2]]
+    for j=0, j<3, j++
+      tmp[j] = f1(a0, a1, a2, ...)
+    D[map_d[i]+0] += tmp[0]
+    D[map_d[i]+1] += tmp[1]
+    D[map_d[i]+2] += tmp[2]
+          
+  // loop structure 3, read directly, increment directly
+  for i=0, i<V, i++
+    E[i] += D[i]*g(...) + C[i]*...
+
+  ...
+}
+\end{lstlisting}
+\end{footnotesize}
+
+The listing is an example of a loop chain that is typical of some explicit fintie element ``Discontinuous Galerking`` methods. In particular, we notice that:
+\begin{itemize}
+\item The first loop nest applies a certain function $h$ over all edges in the mesh (a total of $E$ edges) and increments an indirect dataset $C$.
+\item The second loop nest applies a certain function $f0$ over all cells in the mesh (a total of $C$ cells) and increments an indirect dataset $C$.
+\item The third loop nest applies a certain function $f1$ over all cells in the mesh (a total of $C$ cells) and increments an indirect dataset $D$.
+\item The fourth loop nest iterates over all vertices in the mesh (a total of $V$ vertices) and increments a direct dataset $E$ using values in $C$ and $D$.
+\end{itemize}
+
+\section{Hard Fusion}
+We want to study to what extent this loops are ``hardly fusible``; that is, if and when the different iteration spaces can be collapsed into one and the bodies can be fused into a single body.
+
+We first notice that it is \textbf{not} true that the iterations of the three iteration spaces (cells, edges, and vertices) cannot be related to each other. There are maps, $map_{c0}$ from edges and $map_{c1}$ from cells, that correlate an iteration in these sets to vertices. In other words, the codomain of these maps is the same. We also notice that all of the indirect reads are from unmodified data sets: for example, array $A$ is never modified in the excerpt of the loop chain. We will release this assumption in the following, which will bring us back to think about the need for tiling techniques in order to mix the iterations of different loops. We now show that in this case, these four loops can be hardly fused.
+
+Let us start with simple case, loop structures 2 and 3. Here:
+\begin{itemize}
+\item loop structure 2 indirectly increments the dataset $D$, associated with vertices.
+\item loop structure 3 directly reads from vertices the dataset $D$. Note that at this point, the dataset $C$ has already been updated.
+\end{itemize}
+In this case, the key observation is that array $D$ only \textit{acts as a temporary}. Despite the two loops iterate over different iteration sets, there is an affine map $map_{d}$ that implicitly relates iterations from these two sets. This sort of analysis can be performed statically (assuming to avoid any pointer aliasing problems). Conceptually (and just conceptually), loop structure 3 could firstly be turned into a loop over cells:
+
+\begin{footnotesize}
+\begin{lstlisting}
+for t in timesteps:
+{
+  ...
+          
+  // loop structure 2, read indirectly, increment indirectly
+  for i=0, i<C, i++
+    E[map_d[i]] += D'[map_d[i]]*g(...) + C[i]*...
+
+  ...
+}
+\end{lstlisting}
+\end{footnotesize}
+
+Where $D'$ is the dataset of all of the individual increments performed by the preceding loop. Then, loop structures 2 and 3 could now be fused within a single loop structure, as follows (note the absence of the ``temporary`` $D$):
+
+\begin{footnotesize}
+\begin{lstlisting}
+for t in timesteps:
+{
+  ...
+          
+  // loop structure F23, read indirectly, increment directly
+  for i=0, i<C, i++
+    a0 = A[map_a1[i+0]]
+    a1 = A[map_a1[i+1]]
+    a2 = A[map_a1[i+2]]
+    for j=0, j<3, j++
+      tmp[j] = f1(a0, a1, a2, ...)
+    E[map_d[i]+0] += tmp[0]*g(...) + C[i]*...
+    E[map_d[i]+1] += tmp[1]*g(...) + C[i]*...
+    E[map_d[i]+2] += tmp[2]*g(...) + C[i]*...
+}
+\end{lstlisting}
+\end{footnotesize}
+
+We then go on analyzing loop structure 1 and the newly fused loop structure F23. These loops read indirectly from the same dataset $A$ and write indirectly to datasets $C$ and $E$, respectively. Since sharing happen only on read data, there is \textbf{no} read-after-write dependency between these two loops. Further, they iterate along the same iteration space. So, again, these are trivialy hard fusible, as follows:
+
+\begin{footnotesize}
+\begin{lstlisting}
+for t in timesteps:
+{
+  ...
+          
+  // loop structure F123, read indirectly, increment directly
+  for i=0, i<C, i++
+    a0 = A[map_a1[i+0]]
+    a1 = A[map_a1[i+1]]
+    a2 = A[map_a1[i+2]]
+    for j=0, j<9, j++
+      tmp0[j] = f0(a0, a1, a2, ...)
+    for j=0, j<3, j++
+      tmp1[j] = f1(a0, a1, a2, ...)
+    C[map_c1[i]+0] += tmp0[0]
+    C[map_c1[i]+1] += tmp0[1]
+    C[map_c1[i]+2] += tmp0[2]
+    ...
+    E[map_d[i]+0] += tmp1[0]*g(...) + C[i]*...
+    E[map_d[i]+1] += tmp1[1]*g(...) + C[i]*...
+    E[map_d[i]+2] += tmp1[2]*g(...) + C[i]*...
+}
+\end{lstlisting}
+\end{footnotesize}
+
+Note that hard fusion of non-affine loops open new possibilities for fusing the (affine) loops that live in the bodies (if any). Sometimes, due to application properties, the inner affine (non-perfect) loops share some (i.e. subregions of) iteration spaces. 
+
+The most interesting case concerns fusing loop structures 0 and F123. There is some sharing for what concerns read data; more importantly, the output dataset of these two loop structures is the same, namely $C$. The iteration sets of the two loops are different, although maps ($map_{c0}$ and $map_{c1}$) to the same target dataset are present. Both loops perform increments over the same set. Are these loops hard fusible? And if so, what would be the gain?
+
+The key observation is that same locations in $C$ are going to be updated indirectly by iterations of both loop structures multiple times (recall our initial assumptions: these loops are over meshes, so they span whole iteration spaces). In particular, when a cell and an edge are adjacent, they will increment a same subset of locations in $C$. For example, if a cell is triangular, there will be three edges (i.e. three iterations of loop structure $0$) and one cell (one iteration of loop structure $F123$) incrementing the same subset of locations in $C$, indirectly. When fusing loop structures $0$ and $F123$ the goal can be therefore twofold:
+\begin{itemize}
+\item increasing read-data locality, since both loops are likely to share some read datasets (e.g. $A$ in this example);
+\item as in the previous examples, open new possibilities of classic polyhedral optimization for the bodies of the two fused loops (that, in turn, can be characterized by the presence of some affine loops);
+\item \textbf{minimizing the number of indirect increments}.
+\end{itemize}
+The last point is now our primary goal. To motivate the reader, we anticipate that this particular sequence of loop structures occurs in finite elements in the so called ``assembly`` phase, and the increments to the dataset $C$ can be regarded to as the so called ``insertion in the global matrix`` of the assembly phase.
+
+To achieve this goal, some sort of inspector/executor strategy is required. In particular, the inspector should:
+\begin{enumerate}
+\item if not available already, create a map between the two iteration spaces so that, for example, given a cell, the adjacent edges can be obtained (or viceversa);
+\item select a base loop out of $0$ and $F123$; let's say $F123$, which is more intuitive for the sake of this document. This means that $0$ will eventually be incorporated in $F123$;
+\item attach a piece of information, $wasexecuted$, to each iteration of loop $0$. In particular, a bit, initialized to 0 and switched to 1 once the corresponding iteration has been executed, is needed;
+\item create a new body for $F123$, in which a cell execution is followed by a conditional execution of the three adjacent edges (i.e. they are executed if not already executed);
+\item instead of indirectly incrementing $C$, data is stored temporarily in a ``cell-to-buffer dictionary`` that we name $C2Bcache$;
+\item once a cell $c$ and the three adjacent edges got executed, the buffer $C2Bcache[c]$ is stored (indirectly) in memory, and the entry is flushed away.
+\end{enumerate}
+
+The executor code for the fused loop structures is shown in the following listing.
+
+\clearpage
+
+\begin{footnotesize}
+\begin{lstlisting}
+for t in timesteps:
+{ 
+  // loop structure F0123, read indirectly, increment directly
+  for i=0, i<C, i++
+    // read stuff for F123, and prefetch wasexecuted[c2e[i]]
+    ...
+
+	// execute body of F123, stored in tmp
+	// store in the buffer, as follows:
+    C2Bcache[i*k + 0] += tmp[0]
+    C2Bcache[i*k + 1] += tmp[1]
+    C2Bcache[i*k + 2] += tmp[2]
+    // go on executing the adjacent edges, if not already executed
+    for j=0, j<3, j++
+      if wasexecuted[j]:
+        continue
+      // read stuff for F0; specifically, this might actually be shared with F123
+      // execute body of 0, stored in tmp
+      C2Bcache[i*k + 0] += tmp[0]
+      C2Bcache[i*k + 1] += tmp[1]
+      C2Bcache[i*k + 2] += tmp[2]
+      ...
+      //set wasexecuted[c2e[i]] to 1 because the edge is now executed
+      
+    if wasexecuted[0] and wasexecuted[1] and wasexecuted[2]
+      C[map_c1[i]+0] += C2Bcache[i*k + 0]
+      C[map_c1[i]+1] += C2Bcache[i*k + 1]
+      ...
+}
+\end{lstlisting}
+\end{footnotesize}
+
+Note that this process introduces small overhead, including the need for indirectly accessing the $wasexecuted$ array. This array can be however prefetched before the cell execution begins (so there should be enough overlap before it is actually used), and it has to be set to 1 once the corresponding edge is executed; again, this should not be an expensive operation, since it is non-blocking.
+
+\section{Soft Fusion, or Tiling}
+When a loop indirectly increments a certain dataset and that dataset needs to be read by the subsequent loop, then it becomes practically infeasible to hardly fuse the two loops, and the only solution is to resort to tiling, or soft fusion. Two ways for tiling non-affine loops we all know are:
+\begin{itemize}
+\item (full) sparse tiling
+\item overlapped tiling
+\end{itemize}
+In particular, a generalized overlapped tiling strategy for non-affine mesh loop structures has never (too strong?) been implemented or extensively studied.
+\subsection{Open problems}
+\begin{itemize}
+\item Extending these tiling techniques to the MPI level.
+\end{itemize}
+
+%\begin{thebibliography}{99}
+%\setlength{\parskip}{0pt}
+%
+%\bibitem{FFC-Compiler} Robert~C. Kirby and Anders Logg. 
+%\newblock A compiler for variational forms.
+%\newblock {\em ACM Trans. Math. Softw.}, 32(3):417--444, September 2006.
+%
+%\end{thebibliography}
+
+\end{document}

@@ -1,4 +1,5 @@
 \documentclass[a4paper]{article}
+\usepackage{pslatex}
 \usepackage{authblk}
 \bibliographystyle{plainnat}
 \usepackage[left=1.4in, right=1.4in]{geometry}
@@ -87,7 +88,7 @@ for t in timesteps:
 \end{lstlisting}
 \end{footnotesize}
 
-The listing is an example of a loop chain that is typical of some explicit fintie element ``Discontinuous Galerking`` methods. In particular, we notice that:
+The listing is an example of a loop chain that is typical of some explicit fintie element ``Discontinuous Galerkin'' methods. In particular, we notice that:
 \begin{itemize}
 \item The first loop nest applies a certain function $h$ over all edges in the mesh (a total of $E$ edges) and increments an indirect dataset $C$.
 \item The second loop nest applies a certain function $f0$ over all cells in the mesh (a total of $C$ cells) and increments an indirect dataset $C$.

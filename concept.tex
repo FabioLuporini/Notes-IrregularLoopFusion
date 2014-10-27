@@ -9,14 +9,20 @@
 \usepackage{soul}
 \usepackage[toc,page]{appendix}
 
-\title{On the Fusability of Non-Affine Loops}
+\title{Sparse Notes on the Fusability of Non-Affine Loops}
 \author{F. Luporini}
 \date{}
+
+\makeindex
+
 
 \begin{document}
 \lstset{language=C, breaklines=true}
  
 \maketitle
+\tableofcontents
+
+\clearpage
 
 \section{Characterization}
 This document is an attempt at characterizing the conditions under which a sequence of possibly non-affine loop structures (nests) can be fused into a single loop structure. We focus on a particular class of loops, which is very common in scientific computations, e.g. those based on finite element and finite volume methods. This class is broader than that targeted by the polyhedral model, since it includes forms of non-affine loops that are inherently untreatable through polyhedral analysis. Specifically, our loop chains have some peculiarities:
@@ -38,7 +44,7 @@ Also, the optimizations we have in mind are probably more effective when
 \end{itemize}
 An example of such a loop chain is provided in the following listing.
 
-%\clearpage
+\clearpage
 
 \begin{footnotesize}
 \begin{lstlisting}
@@ -96,8 +102,28 @@ The listing is an example of a loop chain that is typical of some explicit finti
 \item The fourth loop nest iterates over all vertices in the mesh (a total of $V$ vertices) and increments a direct dataset $E$ using values in $C$ and $D$.
 \end{itemize}
 
+\section{What's already out there: sparse tiling (or soft fusion)}
+The generalized full sparse tiling algorithm can be used to group iterations beloging to different (subsequent) loops in a given chain. Sparse tiling, that in this document can be referred to also as \textit{soft fusion} to distinguish from what we propose in the next section, inspects data dependencies to create atomic tasks, or tiles. Another strategy to achieve exactly the same goal is \textit{overlapped tiling}, which, as far as we know, has never been studied in a general setting (i.e. no ``Generalized Overlapped Tiling'' study has ever been published), although the idea per se cannot obviously be considerated new (redundant computation on the boundaries is something widely used, in many different contexts). 
+
+The aforementioned techniques aim to minimize the cost of indirect memory accesses by trying to maximize (read and write) cache locality. They actually represent the best we can do in generic loop chains. However, there can be circumstances and/or sub-regions of a loop chain that are actually amenable to transformations \textit{stronger} than tiling, namely \textit{real or hard fusion}, in which loop bodies are eventually concatenated. We discuss on the advantages of doing so in the next section. For the moment, we clearly state the fundamental condition under which hard fusion is \textbf{not} doable:
+\begin{center}
+\textit{Consider two consecutive loops \emph{A} and \emph{B}. Whenever \emph{A} indirectly increments a dataset \emph{d}, and \emph{d} is read (either directly or indirectly) by loop \emph{B}, then it becomes practically unfeasible to hardly fuse the two loops; therefore, in such a case, the only solution for increasing cross-loop locality is to resort to tiling (sparse or overlapped).}
+\end{center}
+
+
+%Two ways for tiling non-affine loops we all know are:
+%\begin{itemize}
+%\item (full) sparse tiling
+%\item overlapped tiling
+%\end{itemize}
+%In particular, a generalized overlapped tiling strategy for non-affine mesh loop structures has never (too strong?) been implemented or extensively studied.
+%\subsection{Open problems}
+%\begin{itemize}
+%\item Extending these tiling techniques to the MPI level. The MPI parallelization strategy might (let me stress: not necessarily) be orthogonal to the actual tiling strategy.
+%\end{itemize}
+
 \section{Hard Fusion}
-We want to study to what extent this loops are ``hardly fusible``; that is, if and when the different iteration spaces can be collapsed into one and the bodies can be fused into a single body.
+Consider the loop chain described by the first listing of the document. We want to study to what extent these loops are ``hardly fusible``; that is, if and when the different iteration spaces can be collapsed into one and the bodies can be fused into a single body.
 
 We first notice that it is \textbf{not} true that the iterations of the three iteration spaces (cells, edges, and vertices) cannot be related to each other. There are maps, $map_{c0}$ from edges and $map_{c1}$ from cells, that correlate an iteration in these sets to vertices. In other words, the codomain of these maps is the same. We also notice that all of the indirect reads are from unmodified data sets: for example, array $A$ is never modified in the excerpt of the loop chain. We will release this assumption in the following, which will bring us back to think about the need for tiling techniques in order to mix the iterations of different loops. We now show that in this case, these four loops can be hardly fused.
 
@@ -197,7 +223,7 @@ To achieve this goal, some sort of inspector/executor strategy is required. In p
 
 The executor code for the fused loop structures is shown in the following listing.
 
-\clearpage
+%\clearpage
 
 \begin{footnotesize}
 \begin{lstlisting}
@@ -235,22 +261,38 @@ for t in timesteps:
 
 Note that this process introduces small overhead, including the need for indirectly accessing the $wasexecuted$ array. This array can be however prefetched before the cell execution begins (so there should be enough overlap before it is actually used), and it has to be set to 1 once the corresponding edge is executed; again, this should not be an expensive operation, since it is non-blocking.
 
-\section{Soft Fusion, or Tiling}
-When a loop indirectly increments a certain dataset and that dataset needs to be read by the subsequent loop, then it becomes practically infeasible to hardly fuse the two loops, and the only solution is to resort to tiling, or soft fusion. Two ways for tiling non-affine loops we all know are:
+\section{Research Strategy}
+We do not know if and/or to what extent hard fusion will provide any gain over sparse/overlapped tiling strategies. However, there are various hints that suggest so, including the fact that in many problems the amount of data which is indirectly incremented can really be large. Here are a few examples, from finite element:
 \begin{itemize}
-\item (full) sparse tiling
-\item overlapped tiling
+\item Helmholtz equation, DG tetrahedral elements, polynomial order 2: 100 doubles when iterating over cells (400 over edges)
+\item Helmholtz equation, DG tetrahedral elements, polynomial order 3: 400 doubles when iterating over cells (1600 over edges)
+\item Elasticity equation, DG tetrahedral elements, polynomial order 2: 900 doubles when iterating over cells (3600 over edges)
 \end{itemize}
-In particular, a generalized overlapped tiling strategy for non-affine mesh loop structures has never (too strong?) been implemented or extensively studied.
-\subsection{Open problems}
-\begin{itemize}
-\item Extending these tiling techniques to the MPI level.
-\end{itemize}
+Note, however, that as the cost of insertion grows, the computational intensity of the kernel increases. So, it's not that simple/nice.
+
+What we could do is the following:
+\begin{enumerate}
+ \item Real measurement of the insertion cost, i.e. finding the class of problems in which inserting data indirectly in memory represents the dominant cost  (or a significant fraction) of the kernel computation (i.e. kernel is memory bound). This is required to individuate the class of (real) applications motivating the research.
+  \newcounter{enumTemp}
+ \setcounter{enumTemp}{\theenumi}
+ \end{enumerate} 
+ Then, show that hard fusion can be more powerful than tiling. This study may even be outside of finite element land (or any other application):
+ \begin{enumerate}
+  \setcounter{enumi}{\theenumTemp}
+ \item We write a simple application in which the loop chain comprises \emph{N} identical loops, iterating (say) over cells, each kernel indirectly incrementing a dataset associated (say) with vertices. Then we 1) sparse/overlapped tile and 2) hard fuse them, and we look at the runtime. Such a kernel would clearly be memory-bound (there's basically no computation at all). Note that here additional gain could come from reduced loop overhead (i.e. the cell loop is iterated only once in the hard fusion case)
+  \setcounter{enumTemp}{\theenumi}
+ \end{enumerate}
+In practice, such a study would still be too simplistic, since in real applications you never have such a straightforward loop chain. Therefore, more realistically, only real experimentation in real code will prove the hyphotesis. If things go bad, i.e. hard fusion is not such a great idea since soft fusion (sparse/overlapped tiling) reaches similar levels of performance, then we need to have a fallback, which could be the following
+\begin{enumerate}
+  \setcounter{enumi}{\theenumTemp}
+\item Overlapped tiling (with MPI support). This has never been studied systematically before. At first glance, overlapped tiling may seem an orthogonal matter w.r.t. to hard fusion, but it is not practically true. If we want to compare hard fusion with tiling in a large number of \textbf{real} finite element codes, we need to integrate inspector/executor systems for both hard fusion and a tiling technique with Firedrake/PyOP2 (the DSLs for solving PDEs at Imperial College). So, eventually, some tiling library needs to be implemented (sparse tiling could be \textit{readapted}, but still it would require some effort). The implementation phase, therefore, could start with an overlapped tiling library. This way, we will probably have in the end a nice story to tell, even though hard fusion is not that great (read: we can get a paper out of it).
+\end{enumerate}
+
 
 \clearpage
 
 \begin{appendices}
-\section{Example}
+\section{Real example}
 Here we show example code for two parallel loops automatically generated through Firedrake, representing loop structures 0 and 1 in the first listing of this document.
 
 \scriptsize
